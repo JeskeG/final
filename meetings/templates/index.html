@@ -116,7 +116,6 @@
                 $("#times").html('');
                 var events = data.result;
                 for (i = 0; i < events.length; i++){
-                  console.log(events[i]);
                   var strng = "<div class='text-center'>" + events[i].event + " from: " +
                     moment(events[i].start).format('dddd, MMMM Do YYYY, h:mm') + " to: " +
                     moment(events[i].end).format('dddd, MMMM Do YYYY, h:mm') + "</div>";
