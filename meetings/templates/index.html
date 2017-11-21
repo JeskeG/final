@@ -33,107 +33,101 @@
 </head>
 
 <body>
-<div class="container">
+    <div class="container">
 
-<h1>Busy times</h1>
-
-<!--
-  -- If there are any warnings or other messages from a prior action,
-  -- they appear above the rest of the content, just until the next 
-  -- action.
-  -->
-
-<div class="row">
-<div class="column">
-{% with messages = get_flashed_messages() %}
-  {% if messages %}
-    <ul class=flashes>
-    {% for message in messages %}
-      <li>{{ message }}</li>
-    {% endfor %}
-    </ul>
-  {% endif %}
-{% endwith %}
-
-<h2>Date range</h2>
-  <form action="/setrange" method="post">
-  <input type="text" name="daterange" size="12"
-    {% if session.daterange is defined %}
-         value="{{session.daterange}}"
-    {% endif %}
-     class="pull-down"
-     style="background: #fff; cursor: pointer; padding: 5px 10px;
-     border: 1px solid #ccc; width: 12em" >
-  <script type="text/javascript">
-  $(function() {
-  $('input[name="daterange"]').daterangepicker(
-    {    ranges: {
-           'Today': [moment(), moment()],
-           'Tomorrow':[moment().add(1, 'days'),
-                       moment().add(1, 'days')], 
-           'This week':[moment(), moment().endOf('week')],
-           'Next week':[moment().add(7, 'days').startOf('week'),
-                        moment().add(7, 'days').endOf('week')],
-           'This month':[moment(), moment().endOf('month')],
-           'Within two weeks':[moment(),moment().add(15, 'days')]
-        }}
-       );
-    });
-  </script>
-
-<br /><input type="submit" value="Choose" />
-</form>
+    <h1>Free times</h1>
 
     <!--
-    Show the calendar list (if we have it).  This will need to be turned into
-    a form from which calendars can be picked. Up to three entries are
-    shown in each row (but the order is across then down; I would
-    prefer down then across). 
-    -->
+      -- If there are any warnings or other messages from a prior action,
+      -- they appear above the rest of the content, just until the next
+      -- action.
+      -->
 
+      <div class="row">
+        <div class="column">
+          {% with messages = get_flashed_messages() %}
+            {% if messages %}
+              <ul class=flashes>
+              {% for message in messages %}
+                <li>{{ message }}</li>
+              {% endfor %}
+              </ul>
+            {% endif %}
+          {% endwith %}
 
-{% if g.calendars is defined  %}
-  <div class="row">
-  {% for cal in g.calendars if cal.selected %}
-       <div class="form-input">
-      <label><input type="checkbox" class="checkbox" value="{{cal.id}}">
-	   {{ cal.summary }}</label>
+          <label>Date range</label>
+          <form action="/setrange" method="post">
+            <input type="text" name="daterange" size="12"
+              {% if session.daterange is defined %}
+                   value="{{session.daterange}}"
+              {% endif %}
+               class="pull-down"
+               style="background: #fff; cursor: pointer; padding: 5px 10px;
+               border: 1px solid #ccc; width: 12em" >
+              <script type="text/javascript">
+              $(function() {
+              $('input[name="daterange"]').daterangepicker(
+                {    ranges: {
+                       'Today': [moment(), moment()],
+                       'Tomorrow':[moment().add(1, 'days'),
+                                   moment().add(1, 'days')],
+                       'This week':[moment(), moment().endOf('week')],
+                       'Next week':[moment().add(7, 'days').startOf('week'),
+                                    moment().add(7, 'days').endOf('week')],
+                       'This month':[moment(), moment().endOf('month')],
+                       'Within two weeks':[moment(),moment().add(15, 'days')]
+                    }}
+                   );
+                });
+              </script>
+              <br />
+              <input type="submit" value="Choose" />
+            <br />
+            <label><p>Meet between:</p></label>
+            <input type=time name="begin_time" id="begin_time" value="00:00" />
+            <input type=time name="end_time" id="end_time" value="00:00"/>
+          </form>
         </div>
-        </div> <div class="row">
-  {% endfor %}
-  </div>
-{% endif %}
-    
-<button type="button", class="btn btn-default submit">Select</button>
-  </div>
-  <div class="column">
-    <p> </p>
-  </div>
-
- <div class="column">
-
-<div id="busy_times"><p style="margin-top: 10px;"></p></div>
- </div>
-</div>
-
-<script>
-$(".submit").on("click", function(event){
-    var cals = [];
-    $.each($('.checkbox:checkbox:checked'), function(index, value) {
-    cals.push(value.value);});
-    $.post("/busy", {list: cals}, function(data){
-    var events = data.result;
-    var times_string = "<p> </p> <p> </p> <p> </p> <p> </p> <p> </p> <p> </p>";
-    for(i = 0; i < events.length; i++){
-    times_string += "<p>" + events[i] + "</p>";
-    } //end of for loop
-    $('#busy_times').html(times_string);
-  });//end of post
-});//end of on click
-</script>
-
-
-
-
-  </div>  <!-- container (for bootstrap) -->
-  </body> </html>
+      </div>
+      <div class="col-lg-6">
+        <div class="row">
+          <form>
+            {% if g.calendars is defined  %}
+              {% for cal in g.calendars if cal.selected %}
+                <div class="form-input">
+                  <label><input type="checkbox" class="checkbox" value="{{cal.id}}">{{ cal.summary }}</label>
+                </div>
+              </form>
+            </div> <div class="row">
+              {% endfor %}
+            </div>
+            {% endif %}
+            <button type="button", class="btn btn-default select">Select</button>
+          </form>
+        </div>
+          <div class="col-lg-6">
+            <div id="times"></div>
+            <script>
+            $(".select").on("click", function(event){
+                var cals = [];
+                $.each($('.checkbox:checkbox:checked'), function(index, value) {
+                cals.push(value.value);});
+                $.post("/free", {list: cals}, function(data){
+                $("#times").html('');
+                var events = data.result;
+                for (i = 0; i < events.length; i++){
+                  console.log(events[i]);
+                  var strng = "<div class='text-center'>" + events[i].event + " from: " +
+                    moment(events[i].start).format('dddd, MMMM Do YYYY, h:mm') + " to: " +
+                    moment(events[i].end).format('dddd, MMMM Do YYYY, h:mm') + "</div>";
+                  $('#times').append(strng);
+                  }
+                });
+            });
+            </script>
+          </div>
+        </div>
+       </div>
+  </div><!-- container (for bootstrap) -->
+</body>
+</html>

@@ -71,24 +71,91 @@ def choose():
     return render_template('index.html')
 
 
-@app.route("/busy", methods=["POST"])
-def busy():
-    app.logger.debug("Starting to calculate busy times")
-    events = []
+@app.route("/free", methods=["POST"])
+def free():
+    app.logger.debug("Starting to calculate free times")
+    freetime = []
+    busytime = []
     end = flask.session['end_date']
     beg = flask.session['begin_date']
+    start_time = flask.session['start_time']
+    end_time = flask.session['stop_time']
+    app.logger.debug("start = {}".format(arrow.get(beg)))
+    app.logger.debug("end = {}".format(arrow.get(end)))
+    start_hr = time_to_num(str(start_time))[0]
+    start_min = time_to_num(str(start_time))[1]
+    end_hr = time_to_num(str(end_time))[0]
+    end_min = time_to_num(str(end_time))[1]
+    app.logger.debug("start_time as num = {}".format(start_hr))
+    app.logger.debug("end_time as num= {}".format(end_hr))
+    date = arrow.get(beg)
+    stop = arrow.get(end)
+    while date <= stop:
+        s_date = date.shift(hours=start_hr, minutes=start_min)
+        e_date = date.shift(hours=end_hr, minutes=end_min)
+        app.logger.debug("s_date: {}".format(s_date.time()))
+        app.logger.debug("e_date: {}".format(e_date.time()))
+        freetime.append(Event('Free', s_date, e_date))
+        date = date.shift(days=+1)
     cals = request.form.getlist('list[]')
     service = get_gcal_service(valid_credentials())
     for cal in cals:
         try:
             results = service.events().list(calendarId=cal, timeMin=beg, timeMax=end, singleEvents=True, orderBy="startTime").execute()
-            real = results.get('items', [])
-            for elem in real:
-                events.append(elem['summary'])
+            events = results.get('items', [])
         except:
             app.logger.debug("Something failed")
-    app.logger.debug("events = " + str(events))
-    return flask.jsonify(result=events)
+    for item in events:
+        b = arrow.get(item['start']['dateTime'])
+        e = arrow.get(item['end']['dateTime'])
+        name = item['summary']
+        busytime.append(Event(name, b, e))
+    for free in freetime:
+        for busy in busytime:
+            fs = free.start_time.time()
+            fe = free.end_time.time()
+            bs = busy.start_time.time()
+            be = busy.end_time.time()
+            if free.start_time.date() == busy.start_time.date():
+                if free.start_time.date() == busy.end_time.date():  # single day event
+                    if bs <= fs:
+                        if be >= fe:  # busy throughout free
+                            freetime.remove(free)
+                            continue
+                        else:
+                            free.start_time = busy.end_time  # busy front overlaps
+                            continue
+                    if bs > fs:
+                        if be < fe:
+                            free.end_time = busy.start_time  # busy cuts up free into two
+                            freetime.append(Event('Free', busy.end_time, free.end_time))
+                            continue
+                        elif be >= fe:
+                            if bs < fe:
+                                free.end_time = busy.start_time  # busy back overlaps
+                                continue
+                elif busy.end_time.date() > free.end_time.date(): # multiday event
+                    if bs <= fs:
+                        freetime.remove(free)  # multiday event completely kills this free time
+                        continue
+                    if bs < fe:
+                        free.end_time = busy.start_time  # multiday event starts after free
+                        continue
+            elif free.start_time.date() == busy.end_time.date():
+                if be > fs: # wrap around from prev day busy event
+                    if be < fe:
+                        free.start_time = busy.end_time
+                        continue
+                if be >= fe:
+                        freetime.remove(free)
+                        continue
+    times = []
+    for event in freetime:
+        times.append({"event": event.name, "start": (event.start_time).isoformat(), "end": (event.end_time).isoformat()})
+    for event in busytime:
+        times.append({"event": event.name, "start": (event.start_time).isoformat(), "end": (event.end_time).isoformat()})
+    times = sorted(times, key=lambda k: arrow.get(k['start']))
+    return flask.jsonify(result=times)
 
 
 
@@ -218,13 +285,16 @@ def setrange():
     flask.flash("Setrange gave us '{}'".format(
       request.form.get('daterange')))
     daterange = request.form.get('daterange')
+    flask.session['start_time'] = request.form.get("begin_time")
+    flask.session['stop_time'] = request.form.get('end_time')
     flask.session['daterange'] = daterange
     daterange_parts = daterange.split()
     flask.session['begin_date'] = interpret_date(daterange_parts[0])
     flask.session['end_date'] = interpret_date(daterange_parts[2])
-    app.logger.debug("Setrange parsed {} - {}  dates as {} - {}".format(
+    app.logger.debug("Setrange parsed {} - {}  dates as {} - {} and {} - {} times as {} - {}".format(
       daterange_parts[0], daterange_parts[1], 
-      flask.session['begin_date'], flask.session['end_date']))
+      flask.session['begin_date'], flask.session['end_date'], flask.session['start_time'], flask.session['stop_time'], flask.session['begin_time'],
+    flask.session['end_time']))
     return flask.redirect(flask.url_for("choose"))
 
 ####
@@ -379,6 +449,18 @@ def format_arrow_time( time ):
         return normal.format("HH:mm")
     except:
         return "(bad time)"
+
+
+def time_to_num(time_str):
+    hh, mm = map(int, time_str.split(':'))
+    return [hh, mm]
+
+
+class Event:
+    def __init__(self, name, start, end,):
+        self.start_time = start
+        self.end_time = end
+        self.name = name
     
 #############
 
