@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Schedule</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<link rel="stylesheet" type="text/css"
+     href="//cdn.jsdelivr.net/bootstrap/latest/css/bootstrap.css"
+/>
+
+
+<link rel="stylesheet" type="text/css"
+    href="/static/css/busy.css"
+/>
+
+<!-- jquery from a content distribution network; probably cached -->
+<script type="text/javascript"
+     src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js">
+</script>
+
+<!-- Ideally the rest of our javascript dependencies would be
+     bundled and minified with 'browserify', but I've found that
+     it difficult to handle browserify dependencies for class
+     projects.  So, we'll pick up moment and a date range picker
+     from CDNs instead.
+-->
+
+<script type="text/javascript" src="//cdn.jsdelivr.net/momentjs/latest/moment.min.js"></script>
+
+<script type="text/javascript" src="//cdn.jsdelivr.net/bootstrap.daterangepicker/2/daterangepicker.js"></script>
+<link rel="stylesheet" type="text/css" href="//cdn.jsdelivr.net/bootstrap.daterangepicker/2/daterangepicker.css" />
+
+
+</head>
+<body>
+<div class="container">
+<h1>Calculate Meeting Time</h1>
+<div id="users"></div>
+<br />
+<br />
+<div id="meet_times"></div>
+    <script>
+     $.get("/calculate", function(data){
+        $('#users').html('');
+        $('#meet_times').html('');
+        var meet_times = data.result.meet_times;
+        var no_response = data.result.no_response;
+        console.log("waiting for = " + no_response);
+        var e_num = no_response.length;
+        console.log(e_num);
+        var m_num = meet_times.length;
+        for(i = 0; i < e_num; i++){
+            var attendee = no_response[i];
+            console.log(attendee);
+            $('#users').append("<div class='text-center'><strong>"+ attendee +"</strong>  hasn't responded </div>");
+        }
+        if(m_num >0){
+            for (i=0; i< m_num; i++){
+                $("#meet_times").append("<div class='text-center'>Free Time from: <strong>" +
+                        moment(meet_times[i].start).format('dddd, MMMM Do YYYY, h:mm') + "</strong> to: <strong>" +
+                        moment(meet_times[i].end).format('dddd, MMMM Do YYYY, h:mm')+"</strong></div>");
+            }
+        }
+        else{
+        $("#meet_times").append("<div class='text-center'> NO FREE TIME AMONG RESPONDED ATTENDEES </div>");
+        }
+     });
+        </script>
+    <br />
+    <br />
+    <h3>Be sure to notify attendees once you have decided on a meeting time.</h3>
+</div>
+</body>
+</html>

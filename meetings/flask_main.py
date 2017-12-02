@@ -1,10 +1,15 @@
+import hashlib
+
 import flask
 import requests
+import sys
 from flask import render_template
 from flask import request
 from flask import url_for
 import uuid
-
+import string
+import random
+from bson.objectid import ObjectId
 import json
 import logging
 
@@ -25,15 +30,37 @@ from apiclient import discovery
 # Globals
 ###
 import config
+from pymongo import MongoClient
+
 if __name__ == "__main__":
     CONFIG = config.configuration()
 else:
     CONFIG = config.configuration(proxied=True)
 
+MONGO_CLIENT_URL = "mongodb://{}:{}@{}.{}/{}".format(
+    CONFIG.DB_USER,
+    CONFIG.DB_USER_PW,
+    CONFIG.DB_HOST,
+    CONFIG.DB_PORT,
+    CONFIG.DB)
+
+try:
+    dbclient = MongoClient(MONGO_CLIENT_URL)
+    db = getattr(dbclient, CONFIG.DB)
+    collection = db.meetings
+
+except:
+    print("Failure opening database.  Is Mongo running? Correct password?")
+    sys.exit(1)
+
+
+print("Using URL '{}'".format(MONGO_CLIENT_URL))
+
+
 app = flask.Flask(__name__)
-app.debug=CONFIG.DEBUG
+app.debug = CONFIG.DEBUG
 app.logger.setLevel(logging.DEBUG)
-app.secret_key=CONFIG.SECRET_KEY
+app.secret_key = CONFIG.SECRET_KEY
 
 SCOPES = 'https://www.googleapis.com/auth/calendar.readonly'
 CLIENT_SECRET_FILE = CONFIG.GOOGLE_KEY_FILE  ## You'll need this
@@ -51,149 +78,266 @@ def index():
   app.logger.debug("Entering index")
   if 'begin_date' not in flask.session:
     init_session_values()
-  return render_template('index.html')
+  return render_template('request.html')
 
 @app.route("/choose")
 def choose():
-    ## We'll need authorization to list calendars 
-    ## I wanted to put what follows into a function, but had
-    ## to pull it back here because the redirect has to be a
-    ## 'return' 
+    return render_template('request.html')
+
+@app.route("/login", methods=["POST"]) # FIXME!!!
+def login():
     app.logger.debug("Checking credentials for Google calendar access")
     credentials = valid_credentials()
     if not credentials:
-      app.logger.debug("Redirecting to authorization")
-      return flask.redirect(flask.url_for('oauth2callback'))
+        app.logger.debug("Redirecting to authorization")
+        return flask.redirect(flask.url_for('oauth2callback'))
 
     gcal_service = get_gcal_service(credentials)
     app.logger.debug("Returned from get_gcal_service")
     flask.g.calendars = list_calendars(gcal_service)
-    return render_template('index.html')
+    return flask.render_template('attendee.html')
 
 
-@app.route("/free", methods=["POST"])
-def free():
+@app.route("/respond/<meeting>/<ID>")
+def respond(meeting, ID):
+    flask.session['meeting'] = meeting
+    flask.session['ID'] = ID
+    db = collection.find_one({"_id": ObjectId(meeting)})
+    flask.g.name = db["meeting_name"]
+    beg = arrow.get(db['begin_date']).format("YYYY-MM-DD")
+    end = arrow.get(db['end_date']).format("YYYY-MM-DD")
+    flask.g.date = beg + " - " + end
+    flask.g.time = db['begin_time'] + " - " + db['end_time']
+    return flask.render_template("attendee.html")
+
+
+@app.route("/schedule/<meet_id>")
+def schedule(meet_id):
+    meet_id = flask.session['meeting']
+    return flask.render_template("schedule.html")
+
+
+@app.route("/create_meeting", methods=["POST"])
+def create_meeting():
+    name = request.form["name"]
+    emails = request.form.getlist("emails[]")
+    app.logger.debug("meeting =" + name)
+    app.logger.debug("emails = "+ str(emails))
+    beg_time = flask.session['start_time']
+    end_time = flask.session['stop_time']
+    beg_date = flask.session['begin_date']
+    end_date = flask.session['end_date']
+    create_db(name, beg_date, end_date, beg_time, end_time, emails)
+    app.logger.debug("DB created, redirecting to URLS")
+    app.logger.debug("URL_list = " + str(flask.session['url_list']))
+    return flask.jsonify(result=flask.url_for("add"))
+
+
+@app.route("/add")
+def add():
+    flask.g.url_list = flask.session['url_list']
+    return flask.render_template("add.html")
+
+
+@app.route("/calculate")
+def calculate():
+    db = collection.find_one({"_id": ObjectId(flask.session['meeting'])})
+    users = db['attendees']
     app.logger.debug("Starting to calculate free times")
     freetime = []
-    busytime = []
+    busytime= []
+    no_response=[]
     end = flask.session['end_date']
     beg = flask.session['begin_date']
     start_time = flask.session['start_time']
     end_time = flask.session['stop_time']
-    app.logger.debug("start = {}".format(arrow.get(beg)))
-    app.logger.debug("end = {}".format(arrow.get(end)))
     start_hr = time_to_num(str(start_time))[0]
     start_min = time_to_num(str(start_time))[1]
     end_hr = time_to_num(str(end_time))[0]
     end_min = time_to_num(str(end_time))[1]
-    app.logger.debug("start_time as num = {}".format(start_hr))
-    app.logger.debug("end_time as num= {}".format(end_hr))
     date = arrow.get(beg)
     stop = arrow.get(end)
     while date <= stop:
         s_date = date.shift(hours=start_hr, minutes=start_min)
         e_date = date.shift(hours=end_hr, minutes=end_min)
-        app.logger.debug("s_date: {}".format(s_date.time()))
-        app.logger.debug("e_date: {}".format(e_date.time()))
-        freetime.append(Event('Free', s_date, e_date))
+        freetime.append({"name": 'Free', "start": s_date, "end": e_date})
         date = date.shift(days=+1)
+    for user in users:
+        if not user['responded']:
+            no_response.append(user['email'])
+            continue
+        if user['busy_times']:
+            busytime.append(user['busy_times'][0])
+            app.logger.debug("A busy time = " + str(user['busy_times'][0]))
+    meet_time = calc_free_time(freetime, busytime)
+    app.logger.debug("meet_times = " + str(meet_time))
+    app.logger.debug("hasn't responded = "+ str(no_response))
+    meeting_info = {"meet_times": meet_time, "no_response": no_response}
+    return flask.jsonify(result=meeting_info)
+
+
+@app.route("/busy", methods=["POST"])
+def busy():
+    app.logger.debug("calculating busy times for {}".format(flask.session["ID"]))
+    end = flask.session['end_date']
+    beg = flask.session['begin_date']
+    busy = calc_busy_time(beg, end)
+    app.logger.debug("busy times = {}".format(str(busy)))
+    update_busy_times(busy, flask.session['meeting'], flask.session["ID"])
+    update_responded(flask.session['meeting'], flask.session["ID"])
+    app.logger.debug("DB is updated")
+    return flask.jsonify(result=flask.url_for("schedule", meet_id=flask.session['meeting']))
+
+
+@app.route('/oauth2callback')
+def oauth2callback():
+  """
+  The 'flow' has this one place to call back to.  We'll enter here
+  more than once as steps in the flow are completed, and need to keep
+  track of how far we've gotten. The first time we'll do the first
+  step, the second time we'll skip the first step and do the second,
+  and so on.
+  """
+  app.logger.debug("Entering oauth2callback")
+  flow =  client.flow_from_clientsecrets(
+      CLIENT_SECRET_FILE,
+      scope= SCOPES,
+      redirect_uri=flask.url_for('oauth2callback', _external=True))
+  app.logger.debug("Got flow")
+  if 'code' not in flask.request.args:
+    app.logger.debug("Code not in flask.request.args")
+    auth_uri = flow.step1_get_authorize_url()
+    return flask.redirect(auth_uri)
+  else:
+    app.logger.debug("Code was in flask.request.args")
+    auth_code = flask.request.args.get('code')
+    credentials = flow.step2_exchange(auth_code)
+    flask.session['credentials'] = credentials.to_json()
+    app.logger.debug("Got credentials")
+    return flask.redirect(flask.url_for('respond', meeting=flask.session['meeting'], ID=flask.session['ID']))
+
+
+@app.route('/setrange', methods=['POST'])
+def setrange():
+    """
+    User chose a date range with the bootstrap daterange
+    widget.
+    """
+    app.logger.debug("Entering setrange")  
+    flask.flash("Setrange gave us '{}'".format(
+      request.form.get('daterange')))
+    daterange = request.form.get('daterange')
+    flask.session['start_time'] = request.form.get("begin_time")
+    flask.session['stop_time'] = request.form.get('end_time')
+    flask.session['daterange'] = daterange
+    daterange_parts = daterange.split()
+    flask.session['begin_date'] = interpret_date(daterange_parts[0])
+    flask.session['end_date'] = interpret_date(daterange_parts[2])
+    app.logger.debug("Setrange parsed {} - {}  dates as {} - {} and {} - {} times as {} - {}".format(
+      daterange_parts[0], daterange_parts[1], 
+      flask.session['begin_date'], flask.session['end_date'],
+        flask.session['start_time'], flask.session['stop_time'],
+        flask.session['begin_time'],flask.session['end_time']))
+    return flask.redirect(flask.url_for("choose"))
+
+
+#######
+#FUNCTIONS USED
+
+
+def update_busy_times(busy, meeting, user):
+    collection.update_one({'_id': ObjectId(meeting), "attendees.ID": str(user)},
+                          {"$set": {'attendees.$.busy_times': busy}}, upsert=True)
+
+
+def update_responded(meeting, user):
+    collection.update_one({'_id': ObjectId(meeting), "attendees.ID": str(user)},
+                          {"$set": {"attendees.$.responded": True}}, upsert=True)
+
+
+def calc_busy_time(beg, end):
+    events = []
+    end = flask.session['end_date']
+    beg = flask.session['begin_date']
     cals = request.form.getlist('list[]')
     service = get_gcal_service(valid_credentials())
     for cal in cals:
         try:
-            results = service.events().list(calendarId=cal, timeMin=beg, timeMax=end, singleEvents=True, orderBy="startTime").execute()
-            events = results.get('items', [])
+            results = service.events().list(calendarId=cal, timeMin=beg, timeMax=end, singleEvents=True,
+                                            orderBy="startTime").execute()
+            real = results.get('items', [])
+            for elem in real:
+                if elem['start']['dateTime']:
+                    events.append({"name": elem['summary'],
+                                   "start": elem['start']['dateTime'],
+                                   "end": elem['end']['dateTime']})
+                else:  # all day event!
+                    start = str(elem['start']['date'])+"T00:00:00-08:00"
+                    end = str(elem['end']['date'])+"T24:00:00-08:00"
+                    events.append({"name": elem['summary'], "start": start, "end": end})
         except:
             app.logger.debug("Something failed")
-    for item in events:
-        b = arrow.get(item['start']['dateTime'])
-        e = arrow.get(item['end']['dateTime'])
-        name = item['summary']
-        busytime.append(Event(name, b, e))
+    app.logger.debug("events = " + str(events))
+    return events
+
+def calc_free_time(freetime, busytime):
     for free in freetime:
         for busy in busytime:
-            fs = free.start_time.time()
-            fe = free.end_time.time()
-            bs = busy.start_time.time()
-            be = busy.end_time.time()
-            if free.start_time.date() == busy.start_time.date():
-                if free.start_time.date() == busy.end_time.date():  # single day event
+            free_start = arrow.get(free['start'])
+            fs = free_start.time()
+            free_end = arrow.get(free['end'])
+            fe = free_end.time()
+            busy_start = arrow.get(busy['start'])
+            bs = busy_start.time()
+            busy_end = arrow.get(busy['end'])
+            be=busy_end.time()
+            if free_start.date() == busy_start.date():
+                if free_start.date() == busy_end.date():  # single day event
                     if bs <= fs:
                         if be >= fe:  # busy throughout free
                             freetime.remove(free)
                             continue
                         else:
-                            free.start_time = busy.end_time  # busy front overlaps
+                            free['start'] = busy['end']  # busy front overlaps
                             continue
                     if bs > fs:
                         if be < fe:
-                            free.end_time = busy.start_time  # busy cuts up free into two
-                            freetime.append(Event('Free', busy.end_time, free.end_time))
+                            free['end'] = busy['start']  # busy cuts up free into two
+                            freetime.append({"name": 'Free', "start": busy['end'], "end": free['end']})
                             continue
                         elif be >= fe:
                             if bs < fe:
-                                free.end_time = busy.start_time  # busy back overlaps
+                                free['end'] = busy['start']  # busy back overlaps
                                 continue
-                elif busy.end_time.date() > free.end_time.date(): # multiday event
+                elif busy_end.date() > free_end.date(): # multiday event
                     if bs <= fs:
                         freetime.remove(free)  # multiday event completely kills this free time
                         continue
                     if bs < fe:
-                        free.end_time = busy.start_time  # multiday event starts after free
+                        free['end'] = busy['start']  # multiday event starts after free
                         continue
-            elif free.start_time.date() == busy.end_time.date():
-                if be > fs: # wrap around from prev day busy event
+            elif free_start.date() == busy_end.date():
+                if be > fs:  # wrap around from prev day busy event
                     if be < fe:
-                        free.start_time = busy.end_time
+                        free["start"] = busy['end']
                         continue
                 if be >= fe:
                         freetime.remove(free)
                         continue
     times = []
     for event in freetime:
-        times.append({"event": event.name, "start": (event.start_time).isoformat(), "end": (event.end_time).isoformat()})
-    for event in busytime:
-        times.append({"event": event.name, "start": (event.start_time).isoformat(), "end": (event.end_time).isoformat()})
+        times.append({"event": event['name'], "start": arrow.get(event['start']).isoformat(),
+                      "end": arrow.get(event['end']).isoformat()})
     times = sorted(times, key=lambda k: arrow.get(k['start']))
-    return flask.jsonify(result=times)
+    return times
 
-
-
-####
-#
-#  Google calendar authorization:
-#      Returns us to the main /choose screen after inserting
-#      the calendar_service object in the session state.  May
-#      redirect to OAuth server first, and may take multiple
-#      trips through the oauth2 callback function.
-#
-#  Protocol for use ON EACH REQUEST: 
-#     First, check for valid credentials
-#     If we don't have valid credentials
-#         Get credentials (jump to the oauth2 protocol)
-#         (redirects back to /choose, this time with credentials)
-#     If we do have valid credentials
-#         Get the service object
-#
-#  The final result of successful authorization is a 'service'
-#  object.  We use a 'service' object to actually retrieve data
-#  from the Google services. Service objects are NOT serializable ---
-#  we can't stash one in a cookie.  Instead, on each request we
-#  get a fresh serivce object from our credentials, which are
-#  serializable. 
-#
-#  Note that after authorization we always redirect to /choose;
-#  If this is unsatisfactory, we'll need a session variable to use
-#  as a 'continuation' or 'return address' to use instead. 
-#
-####
 
 def valid_credentials():
     """
     Returns OAuth2 credentials if we have valid
     credentials in the session.  This is a 'truthy' value.
     Return None if we don't have credentials, or if they
-    have expired or are otherwise invalid.  This is a 'falsy' value. 
+    have expired or are otherwise invalid.  This is a 'falsy' value.
     """
     if 'credentials' not in flask.session:
       return None
@@ -223,79 +367,35 @@ def get_gcal_service(credentials):
   app.logger.debug("Returning service")
   return service
 
-@app.route('/oauth2callback')
-def oauth2callback():
-  """
-  The 'flow' has this one place to call back to.  We'll enter here
-  more than once as steps in the flow are completed, and need to keep
-  track of how far we've gotten. The first time we'll do the first
-  step, the second time we'll skip the first step and do the second,
-  and so on.
-  """
-  app.logger.debug("Entering oauth2callback")
-  flow =  client.flow_from_clientsecrets(
-      CLIENT_SECRET_FILE,
-      scope= SCOPES,
-      redirect_uri=flask.url_for('oauth2callback', _external=True))
-  ## Note we are *not* redirecting above.  We are noting *where*
-  ## we will redirect to, which is this function. 
-  
-  ## The *second* time we enter here, it's a callback 
-  ## with 'code' set in the URL parameter.  If we don't
-  ## see that, it must be the first time through, so we
-  ## need to do step 1. 
-  app.logger.debug("Got flow")
-  if 'code' not in flask.request.args:
-    app.logger.debug("Code not in flask.request.args")
-    auth_uri = flow.step1_get_authorize_url()
-    return flask.redirect(auth_uri)
-    ## This will redirect back here, but the second time through
-    ## we'll have the 'code' parameter set
-  else:
-    ## It's the second time through ... we can tell because
-    ## we got the 'code' argument in the URL.
-    app.logger.debug("Code was in flask.request.args")
-    auth_code = flask.request.args.get('code')
-    credentials = flow.step2_exchange(auth_code)
-    flask.session['credentials'] = credentials.to_json()
-    ## Now I can build the service and execute the query,
-    ## but for the moment I'll just log it and go back to
-    ## the main screen
-    app.logger.debug("Got credentials")
-    return flask.redirect(flask.url_for('choose'))
 
-#####
-#
-#  Option setting:  Buttons or forms that add some
-#     information into session state.  Don't do the
-#     computation here; use of the information might
-#     depend on what other information we have.
-#   Setting an option sends us back to the main display
-#      page, where we may put the new information to use. 
-#
-#####
+def create_db(meet_name, beg_date, end_date, beg_time, end_time, attendees):
+    attendee_list = []
+    url_list = []
+    for name in attendees:
+        attendee_list.append({"email": name,
+                              "responded": False,
+                              "busy_times": None,
+                              "ID": hashlib.md5(name.encode()).hexdigest()})
+    meeting = {"meeting_name": meet_name,
+               "begin_date": beg_date,
+               "end_date": end_date,
+               "begin_time": beg_time,
+               "end_time": end_time,
+               "attendees": attendee_list}
+    flask.session['meet_id'] = str(collection.insert_one(meeting).inserted_id)
+    for person in attendee_list:
+        url_dict = {"name": person['email'],
+                    "url": str(flask.url_for("respond",
+                                             meeting=flask.session['meet_id'], ID=person["ID"], _external=True))}
+        url_list.append(url_dict)
+    flask.session['url_list'] = url_list
+    return
 
-@app.route('/setrange', methods=['POST'])
-def setrange():
-    """
-    User chose a date range with the bootstrap daterange
-    widget.
-    """
-    app.logger.debug("Entering setrange")  
-    flask.flash("Setrange gave us '{}'".format(
-      request.form.get('daterange')))
-    daterange = request.form.get('daterange')
-    flask.session['start_time'] = request.form.get("begin_time")
-    flask.session['stop_time'] = request.form.get('end_time')
-    flask.session['daterange'] = daterange
-    daterange_parts = daterange.split()
-    flask.session['begin_date'] = interpret_date(daterange_parts[0])
-    flask.session['end_date'] = interpret_date(daterange_parts[2])
-    app.logger.debug("Setrange parsed {} - {}  dates as {} - {} and {} - {} times as {} - {}".format(
-      daterange_parts[0], daterange_parts[1], 
-      flask.session['begin_date'], flask.session['end_date'], flask.session['start_time'], flask.session['stop_time'], flask.session['begin_time'],
-    flask.session['end_time']))
-    return flask.redirect(flask.url_for("choose"))
+def time_to_num(time_str):
+    hh, mm = map(int, time_str.split(':'))
+    return [hh, mm]
+
+
 
 ####
 #
@@ -340,16 +440,6 @@ def interpret_time( text ):
               .format(text))
         raise
     return as_arrow.isoformat()
-    #HACK #Workaround
-    # isoformat() on raspberry Pi does not work for some dates
-    # far from now.  It will fail with an overflow from time stamp out
-    # of range while checking for daylight savings time.  Workaround is
-    # to force the date-time combination into the year 2016, which seems to
-    # get the timestamp into a reasonable range. This workaround should be
-    # removed when Arrow or Dateutil.tz is fixed.
-    # FIXME: Remove the workaround when arrow is fixed (but only after testing
-    # on raspberry Pi --- failure is likely due to 32-bit integers on that platform)
-
 
 def interpret_date( text ):
     """
@@ -449,18 +539,6 @@ def format_arrow_time( time ):
         return normal.format("HH:mm")
     except:
         return "(bad time)"
-
-
-def time_to_num(time_str):
-    hh, mm = map(int, time_str.split(':'))
-    return [hh, mm]
-
-
-class Event:
-    def __init__(self, name, start, end,):
-        self.start_time = start
-        self.end_time = end
-        self.name = name
     
 #############
 

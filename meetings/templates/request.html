@@ -1,0 +1,175 @@
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML//EN">
+<html lang="en"> <head>
+<title>Appointments</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<link rel="stylesheet" type="text/css"
+     href="//cdn.jsdelivr.net/bootstrap/latest/css/bootstrap.css"
+/>
+
+
+<link rel="stylesheet" type="text/css"
+    href="/static/css/busy.css"
+/>
+
+<!-- jquery from a content distribution network; probably cached -->
+<script type="text/javascript"
+     src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.3/jquery.min.js">
+</script>
+
+<!-- Ideally the rest of our javascript dependencies would be
+     bundled and minified with 'browserify', but I've found that
+     it difficult to handle browserify dependencies for class
+     projects.  So, we'll pick up moment and a date range picker
+     from CDNs instead.
+-->
+
+<script type="text/javascript" src="//cdn.jsdelivr.net/momentjs/latest/moment.min.js"></script>
+
+<script type="text/javascript" src="//cdn.jsdelivr.net/bootstrap.daterangepicker/2/daterangepicker.js"></script>
+<link rel="stylesheet" type="text/css" href="//cdn.jsdelivr.net/bootstrap.daterangepicker/2/daterangepicker.css" />
+
+
+<!-- Sliptree token thing -->
+<script type="text/javascript" src="/static/sliptree/dist/bootstrap-tokenfield.min.js"></script>
+<link rel="stylesheet" href="/static/sliptree/dist/css/bootstrap-tokenfield.css"/>
+
+
+</head>
+
+<body>
+    <div class="container">
+
+    <h1>Create a Meeting</h1>
+
+    <!--
+      -- If there are any warnings or other messages from a prior action,
+      -- they appear above the rest of the content, just until the next
+      -- action.
+      -->
+
+      <div class="row">
+        <div class="column">
+          {% with messages = get_flashed_messages() %}
+            {% if messages %}
+              <ul class=flashes>
+              {% for message in messages %}
+                <li>{{ message }}</li>
+              {% endfor %}
+              </ul>
+            {% endif %}
+          {% endwith %}
+
+          <label>Date range</label>
+          <form action="/setrange" method="post">
+            <input type="text" name="daterange" size="12"
+              {% if session.daterange is defined %}
+                   value="{{session.daterange}}"
+              {% endif %}
+               class="pull-down"
+               style="background: #fff; cursor: pointer; padding: 5px 10px;
+               border: 1px solid #ccc; width: 12em" >
+              <script type="text/javascript">
+              $(function() {
+              $('input[name="daterange"]').daterangepicker(
+                {    ranges: {
+                       'Today': [moment(), moment()],
+                       'Tomorrow':[moment().add(1, 'days'),
+                                   moment().add(1, 'days')],
+                       'This week':[moment(), moment().endOf('week')],
+                       'Next week':[moment().add(7, 'days').startOf('week'),
+                                    moment().add(7, 'days').endOf('week')],
+                       'This month':[moment(), moment().endOf('month')],
+                       'Within two weeks':[moment(),moment().add(15, 'days')]
+                    }}
+                   );
+                });
+              </script>
+              <br />
+
+            <br />
+            <label><p>Meet between:</p></label>
+            <input type=time name="begin_time" id="begin_time" value="00:00" />
+            <input type=time name="end_time" id="end_time" value="00:00"/>
+            <input type="submit" value="Choose" />
+          </form>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <div class="row">
+          <form>
+            {% if g.calendars is defined  %}
+              {% for cal in g.calendars if cal.selected %}
+                <div class="form-input">
+                  <label><input type="checkbox" class="checkbox" value="{{cal.id}}">{{ cal.summary }}</label>
+                </div>
+              </form>
+            </div> <div class="row">
+              {% endfor %}
+            </div>
+            {% endif %}
+          </form>
+        </div>
+      <div class="form-group">
+    Meeting Name:<input type="text" id = "meeting_name">
+    <label for="group_emails">Attendees Emails: (press enter after each email)</label>
+    <input type="email" class="form-control" id="group_emails">
+        <p> Be sure to include your own email!</p>
+    <!--script from sliptree bootstrap tokenfield http://sliptree.github.io/bootstrap-tokenfield/ -->
+    <script>
+        $('#group_emails')
+
+          .on('tokenfield:createtoken', function (e) {
+            var data = e.attrs.value.split('|')
+            e.attrs.value = data[1] || data[0]
+            e.attrs.label = data[1] ? data[0] + ' (' + data[1] + ')' : data[0]
+          })
+
+          .on('tokenfield:createdtoken', function (e) {
+            // Über-simplistic e-mail validation
+            var re = /\S+@\S+\.\S+/
+            var valid = re.test(e.attrs.value)
+            if (!valid) {
+              $(e.relatedTarget).addClass('invalid')
+            }
+          })
+
+          .on('tokenfield:edittoken', function (e) {
+            if (e.attrs.label !== e.attrs.value) {
+              var label = e.attrs.label.split(' (')
+              e.attrs.value = label[0] + '|' + e.attrs.value
+            }
+          })
+
+          .on('tokenfield:removedtoken', function (e) {
+            alert('Token removed! Token value was: ' + e.attrs.value)
+          })
+
+          .tokenfield();
+
+
+
+    </script>
+         <button type="button", class="btn btn-default", id ="create">Create Meeting</button>
+        <script>
+          $('#create').on('click', function(event){
+          var name = $("#meeting_name").val();
+          var group_emails = $('#group_emails').tokenfield('getTokensList');
+          var emails = group_emails.split(",").map(function(item) {
+              return item.trim(); });
+          console.log("name = " + name);
+          console.log("emails = " + emails)
+          if (name && emails){
+          $.post("/create_meeting", {name: name, emails: emails}, function(data){
+          console.log("meeting created in DB");
+          window.location = data.result;
+          });
+          } else{
+          console.log('invalid attempt');}
+          });
+        </script>
+        </div>
+    </div>
+
+</body>
+</html>
