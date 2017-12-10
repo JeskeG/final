@@ -84,7 +84,7 @@ def index():
 def choose():
     return render_template('request.html')
 
-@app.route("/login", methods=["POST"]) # FIXME!!!
+@app.route("/login", methods=["POST"])
 def login():
     app.logger.debug("Checking credentials for Google calendar access")
     credentials = valid_credentials()
@@ -147,16 +147,18 @@ def calculate():
     freetime = []
     busytime= []
     no_response=[]
-    end = flask.session['end_date']
-    beg = flask.session['begin_date']
-    start_time = flask.session['start_time']
-    end_time = flask.session['stop_time']
+    beg = arrow.get(db['begin_date']).format("YYYY-MM-DD")
+    end = arrow.get(db['end_date']).format("YYYY-MM-DD")
+    start_time = db['begin_time']
+    end_time = db['end_time']
     start_hr = time_to_num(str(start_time))[0]
     start_min = time_to_num(str(start_time))[1]
     end_hr = time_to_num(str(end_time))[0]
     end_min = time_to_num(str(end_time))[1]
     date = arrow.get(beg)
     stop = arrow.get(end)
+    app.logger.debug("Start hour to shift = " + str(start_hr))
+    app.logger.debug("End hour to shift = " + str(end_hr))
     while date <= stop:
         s_date = date.shift(hours=start_hr, minutes=start_min)
         e_date = date.shift(hours=end_hr, minutes=end_min)
@@ -167,11 +169,12 @@ def calculate():
             no_response.append(user['email'])
             continue
         if user['busy_times']:
-            busytime.append(user['busy_times'][0])
-            app.logger.debug("A busy time = " + str(user['busy_times'][0]))
+            for event in user['busy_times']:
+                busytime.append(event)
+                app.logger.debug("A busy time = " + str(event))
     meet_time = calc_free_time(freetime, busytime)
     app.logger.debug("meet_times = " + str(meet_time))
-    app.logger.debug("hasn't responded = "+ str(no_response))
+    app.logger.debug("hasn't responded = " + str(no_response))
     meeting_info = {"meet_times": meet_time, "no_response": no_response}
     return flask.jsonify(result=meeting_info)
 
@@ -179,8 +182,16 @@ def calculate():
 @app.route("/busy", methods=["POST"])
 def busy():
     app.logger.debug("calculating busy times for {}".format(flask.session["ID"]))
-    end = flask.session['end_date']
-    beg = flask.session['begin_date']
+    db = collection.find_one({"_id": ObjectId(flask.session["meeting"])})
+    start_time = db['begin_time']
+    end_time = db['end_time']
+    start_hr = time_to_num(str(start_time))[0]
+    start_min = time_to_num(str(start_time))[1]
+    end_hr = time_to_num(str(end_time))[0]
+    end_min = time_to_num(str(end_time))[1]
+    beg = arrow.get(db['begin_date']).shift(hours=start_hr, minutes=start_min)
+    app.logger.debug("Begin Time = " + str(beg))
+    end = arrow.get(db['end_date']).shift(hours=end_hr, minutes=end_min)
     busy = calc_busy_time(beg, end)
     app.logger.debug("busy times = {}".format(str(busy)))
     update_busy_times(busy, flask.session['meeting'], flask.session["ID"])
@@ -257,8 +268,6 @@ def update_responded(meeting, user):
 
 def calc_busy_time(beg, end):
     events = []
-    end = flask.session['end_date']
-    beg = flask.session['begin_date']
     cals = request.form.getlist('list[]')
     service = get_gcal_service(valid_credentials())
     for cal in cals:
@@ -280,50 +289,73 @@ def calc_busy_time(beg, end):
     app.logger.debug("events = " + str(events))
     return events
 
+
 def calc_free_time(freetime, busytime):
     for free in freetime:
         for busy in busytime:
             free_start = arrow.get(free['start'])
             fs = free_start.time()
             free_end = arrow.get(free['end'])
+            extra_free = free['end']
             fe = free_end.time()
             busy_start = arrow.get(busy['start'])
             bs = busy_start.time()
             busy_end = arrow.get(busy['end'])
-            be=busy_end.time()
+            be = busy_end.time()
+            if bs >= be:
+                busytime.remove(busy)
+                break
+            if bs < fs:
+                if be < fs:
+                    busytime.remove(busy)
+                    break
+            if bs > fe:
+                busytime.remove(busy)
+                break
             if free_start.date() == busy_start.date():
                 if free_start.date() == busy_end.date():  # single day event
                     if bs <= fs:
                         if be >= fe:  # busy throughout free
                             freetime.remove(free)
-                            continue
+                            app.logger.debug("Free time completely removed")
+                            break
                         else:
-                            free['start'] = busy['end']  # busy front overlaps
-                            continue
+                            if be > fs:
+                                free['start'] = busy['end']  # busy front overlaps
+                                app.logger.debug("Free start = " + str(free_start) + " changed to " + str(busy['end']))
+                                continue
                     if bs > fs:
                         if be < fe:
                             free['end'] = busy['start']  # busy cuts up free into two
-                            freetime.append({"name": 'Free', "start": busy['end'], "end": free['end']})
+                            app.logger.debug("Free end = " + str(free_end) + " changed to " + str(busy['start']))
+                            freetime.append({"name": 'Free', "start": busy['end'],
+                                             "end": extra_free})
+                            app.logger.debug("New time created from "+str(busy['end'])+" to "+str(extra_free))
                             continue
                         elif be >= fe:
                             if bs < fe:
                                 free['end'] = busy['start']  # busy back overlaps
+                                app.logger.debug("Free end = " + str(free_end) + " changed to " + str(busy['start']))
                                 continue
                 elif busy_end.date() > free_end.date(): # multiday event
                     if bs <= fs:
                         freetime.remove(free)  # multiday event completely kills this free time
-                        continue
+                        app.logger.debug("Free time completely removed")
+                        break
                     if bs < fe:
                         free['end'] = busy['start']  # multiday event starts after free
+                        app.logger.debug("Free end = " + str(free_end) + " changed to " + str(busy['start']))
                         continue
             elif free_start.date() == busy_end.date():
                 if be > fs:  # wrap around from prev day busy event
                     if be < fe:
                         free["start"] = busy['end']
+                        app.logger.debug("Free start = " + str(free_start) + " changed to " + str(busy['end']))
                         continue
                 if be >= fe:
                         freetime.remove(free)
-                        continue
+                        app.logger.debug("Free time completely removed")
+                        break
     times = []
     for event in freetime:
         times.append({"event": event['name'], "start": arrow.get(event['start']).isoformat(),
